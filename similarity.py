@@ -138,8 +138,6 @@ def label_diff(seq1, seq2) :
 
 def ir_alignment(seq1, seq2, variances): 
     """ substitution score for IR structure alignment """
-    seq1 = seq1[0]
-    seq2 = seq2[0]
     subsScore = .587*label_diff(seq1, seq2) + .095*abs((seq1['end_index'] - 
         seq1['start_index']) - (seq2['end_index'] - seq2['start_index']))
     + .343*abs(seq1['direction'] - seq2['direction'])
