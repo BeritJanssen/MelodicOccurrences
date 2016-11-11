@@ -18,7 +18,7 @@
 import similarity as sim
 import numpy as np
 import time
-from collections import Counter	
+from collections import Counter
 
 def distance_measures(melody_list,segment_list,
   music_representation,return_positions,scaling):
@@ -31,13 +31,13 @@ def distance_measures(melody_list,segment_list,
     of a duration weighed pitch curve 
     """
     result_list = []
-    keys = ['city','euclid','cor']
+    keys = ['cbd','ed','cd']
     for seg in segment_list:
         segment_curve = [a[music_representation] for a in seg['symbols']]
         if segment_curve[0] is None:
             # checking if first note has an undefined value, 
             # e.g. pitch interval
-            segmentCurve = segment_curve[1:]
+            segment_curve = segment_curve[1:]
         query_length = len(segment_curve)
         for mel in melody_list: 
             result_dict = {}
@@ -63,17 +63,21 @@ def distance_measures(melody_list,segment_list,
                     cor = sim.correlation(this_segment_curve,mel_segment)
                 city = sim.city_block_distance(this_segment_curve,mel_segment)
                 euclid = sim.euclidean_distance(this_segment_curve,mel_segment)
-                matches.append({'city':city,'euclid':euclid,'cor':cor})
+                matches.append({'cbd':city,'ed':euclid,'cd':cor})
             for k in keys: 
                 best_similarity = np.nanmin([m[k] for m in matches])
-                result_dict[k] = {'similarity': best_similarity}
-                if return_positions:
-                    best_match_index = int(next((i for i,m in enumerate(matches) 
-                     if m[k]==best_similarity), None))
-                    match_start_onset, match_end_onset = find_positions(mel, 
-                     best_match_index, query_length-1, scaling)
-                    result_dict[k]['match_start_onset'] = match_start_onset
-                    result_dict[k]['match_end_onset'] = match_end_onset
+                best_match_indices= [i for i,m in enumerate(matches) 
+                 if m[k]==best_similarity]
+                match_list = []
+                for b in best_match_indices:
+                    match_stats = {'similarity': best_similarity} 
+                    if return_positions:
+                        match_start_onset, match_end_onset = find_positions( 
+                         mel, b, query_length-1, scaling)
+                        match_stats['match_start_onset'] = match_start_onset
+                        match_stats['match_end_onset'] = match_end_onset
+                    match_list.append(match_stats)
+                result_dict[k] = match_list 
             result_list.append({'tunefamily_id':seg['tunefamily_id'],
             'query_filename':seg['filename'],
             'match_filename':mel['filename'],
@@ -90,7 +94,7 @@ def find_positions(melody_dict, match_index, query_length, scaling):
     else:
         match_start_onset = match_index / float(scaling)
         match_end_onset = (match_index + query_length) / float(scaling)
-        if melody_dict['onsets_multiplied_by']:
+        if 'onsets_multiplied_by' in melody_dict:
             match_start_onset = (match_start_onset / 
              float(melody_dict['onsets_multiplied_by']))
             match_end_onset = (match_end_onset / 
@@ -127,22 +131,26 @@ def local_aligner(melody_list, segment_list,
 			    # if the first value (e.g. pitch interval, ioi) 
                 #is undefined, discard it
                 mel_curve = mel_curve[1:]
-            match_index, match_length, similarity = sim.local_alignment(
+            match_list = sim.local_alignment(
              segment_curve, mel_curve,
              insertion_weight, deletion_weight,
              substitution_function, return_positions, variances)
-            match_results = {'similarity':similarity}
+            match_results = [{'similarity': match_list[0][2]}]
             if return_positions:
-                match_start_onset, match_end_onset = find_positions(mel, 
-                 match_index, match_length - 1, scaling)
-                match_results['match_start_onset'] = match_start_onset
-                match_results['match_end_onset'] = match_end_onset
+                match = {'similarity': match_list[0][2]}
+                match_results = []
+                for m in match_list:
+                    match_start_onset, match_end_onset = find_positions(mel, 
+                     m[0], m[1] - 1, scaling)
+                    match['match_start_onset'] = match_start_onset
+                    match['match_end_onset'] = match_end_onset
+                    match_results.append(match.copy())
             result_list.append({'tunefamily_id': mel['tunefamily_id'],
              'query_filename': seg['filename'],
              'match_filename': mel['filename'],
              'query_segment_id': seg['segment_id'],
              'query_length': query_length,
-             'matches': {'local_align':match_results}})
+             'matches': {'la': match_results}})
     return result_list
 	
 def SIAM(melody_list,segment_list,music_representation,
@@ -162,31 +170,36 @@ def SIAM(melody_list,segment_list,music_representation,
          s in seg['symbols']]
         for mel in melody_list: 
             translation_vectors = []
-            translation_vectors_with_origin = []
+            translation_vectors_with_position = []
             mel_points = np.array([(s['onset'], s['pitch']) for 
              s in mel['symbols']])
             for p in seg_points: 
                 vectors = (mel_points - p)
                 translation_vectors.extend([tuple(v) for v in vectors])
-                translation_vectors_with_origin.append((p[0], [tuple(v) for 
-                 v in vectors]))
+                translation_vectors_with_position.append((p[0], 
+                 [tuple(v) for v in vectors]))
             grouped_vectors = dict(Counter(translation_vectors))
             # the similarity is the size of the maximal TEC
             similarity = max([grouped_vectors[k] for k in grouped_vectors])
-            match_results = {'similarity': similarity / float(len(seg_points))}
+            match_results = {'similarity': similarity / float(len(seg_points))} 
             if return_positions:
-                shift = max(grouped_vectors, key = grouped_vectors.get)
-                first_query_onset = next((vec[0] for vec in 
-                 translation_vectors_with_origin if shift in vec[1]), None)
-                match_start_onset = first_query_onset + shift[0]
-                match_index = next((i for i, s in enumerate(mel['symbols']) if 
-                 s['onset'] >= match_start_onset),None)
-                match_end_index = match_index + similarity - 1
-                if match_end_index > len(mel['symbols']) - 1:
-                    continue
-                match_end_onset = mel['symbols'][match_end_index]['onset']
-                match_results['match_start_onset'] = match_start_onset
-                match_results['match_end_onset'] = match_end_onset
+                match = {'similarity': similarity / float(len(seg_points))}
+                match_results = []
+                shifts = [key for key in grouped_vectors if 
+                 grouped_vectors[key]==similarity]
+                for shift in shifts:
+                    onsets = [vec[0] for vec in 
+                     translation_vectors_with_position if shift in vec[1]]
+                    match_start_onset = min(onsets) + shift[0]
+                    match_end_onset = max(onsets) + shift[0]
+                    if 'onsets_multiplied_by' in mel:
+                        match_start_onset = (match_start_onset / 
+                         float(mel['onsets_multiplied_by']))
+                        match_end_onset = (match_end_onset / 
+                         float(mel['onsets_multiplied_by']))
+                    match['match_start_onset'] = match_start_onset
+                    match['match_end_onset'] = match_end_onset
+                    match_results.append(match.copy())
             result_list.append({'tunefamily_id': seg['tunefamily_id'],
              'query_filename': seg['filename'],
              'match_filename': mel['filename'],
@@ -196,7 +209,7 @@ def SIAM(melody_list,segment_list,music_representation,
     return result_list
 		
 def matches_in_corpus(all_melody_list, all_segment_list,
- music_representation, measure=local_aligner, return_positions=True, 
+ music_representation='pitch', measure=local_aligner, return_positions=True, 
  scaling=None, *args):
     """ this function finds occurrences in a corpus. It takes a list of 
     all melodies and segments in a corpus, and finds occurrences in the 

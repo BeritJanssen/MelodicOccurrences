@@ -17,6 +17,20 @@
 
 import csv
 
+def add_tunefamily_ids(in_dict,conversion_table_path):
+    """ This function takes a list of dictionaries as produced by "csv_to_dict"
+    and the path to a csv containing the tune family names and identifiers,
+    and adds the identifiers to the in_dict list.
+    This is needed for compatibility of ANN2.0 (which has tune family names) 
+    with FS1.0 (which has tune family identifiers).
+    Most function within MelodicOccurrences sort by tune family identifiers.
+    """
+    mapping = csv_to_dict(conversion_table_path)
+    for entry in in_dict:
+        tf = next((m for m in mapping if m['tunefamily']==entry['tunefamily']),None)
+        entry['tunefamily_id'] = tf['tunefamily_id']
+    return in_dict
+
 def csv_to_dict(doc, keys=None, deli=","):
     """ 
     This function takes a csv file and returns a list of dictionaries.
@@ -41,3 +55,16 @@ def dict_to_csv(in_dict, keys, fname, deli=","):
         for item in in_dict :
             elements = [item[k] for k in keys]
             wr.writerow(elements)
+
+def save_for_R(evaluation_list, fname):
+    out_dict = []
+    general_info = ('match_filename','query_filename','query_segment_id','tunefamily_id')
+    for e in evaluation_list:
+        if e['match_filename']==e['query_filename']:
+            continue
+        position_eval = e['position_eval']
+        for p in position_eval:
+            for key in general_info:
+                p[key] = e[key]
+        out_dict.extend(position_eval)
+    dict_to_csv(out_dict,list(out_dict[0].keys()), fname)

@@ -15,19 +15,21 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-from music21 import *
+import music21 as mus
 import numpy as np
 from collections import Counter
 import math
+import copy
 
 def adjust_meter(mel_dict):
     """ takes a dicionary of melodies, calculates the duration shifts per 
     tune family using histogram intersection and returns the dictionary 
     of melodies after applying meter shift """
+    adjusted_dict = copy.deepcopy(mel_dict)
     durations_of_interest = [0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0]
     tunefams = set([m['tunefamily_id'] for m in mel_dict])
     for t in tunefams :
-        melodies = [m for m in mel_dict if m['tunefamily_id']==t]
+        melodies = [m for m in adjusted_dict if m['tunefamily_id']==t]
         for i,mel in enumerate(melodies) :
             if i==0:
                 hist1 = create_duration_histogram(mel, durations_of_interest)
@@ -40,27 +42,30 @@ def adjust_meter(mel_dict):
                     s['ioi'] *= meter_shift
                     s['onset'] *= meter_shift
             mel['onsets_multiplied_by'] = meter_shift
-    return mel_dict
+    return adjusted_dict
 
 def adjust_pitches(mel_dict):
     """ takes a dicionary of melodies, calculates the pitch shifts per 
     tune family using pitch histogram intersection and returns the dictionary 
     of melodies after applying pitch shift """
+    adjusted_dict = copy.deepcopy(mel_dict)
     tunefams = set([m['tunefamily_id'] for m in mel_dict])
-    for t in tunefams :
-        melodies = [m for m in mel_dict if m['tunefamily_id']==t]
-        for i,mel in enumerate(melodies) :
+    for t in tunefams:
+        melodies = [m for m in adjusted_dict if m['tunefamily_id']==t]
+        for i,mel in enumerate(melodies):
             if i==0:
-                continue
+                hist1 = create_pitch_histogram(mel)
+                pitch_shift = 0
             else:
-                pitch_shift = get_pitch_shift(melodies[0]['pitch12Histogram'],
-                 mel['pitch12Histogram'])
+                hist2 = create_pitch_histogram(mel)
+                pitch_shift = get_pitch_shift(hist1, hist2)
                 for s in mel['symbols']:
                     s['pitch'] += pitch_shift
-    return mel_dict
+            mel['pitch_shifted_by'] = pitch_shift
+    return adjusted_dict
 
 def create_duration_histogram(melody, durations_of_interest):
-    """ takes a melody encoded by music_representation, returns 
+    """ takes a melody encoded by extract_sequences_from_corpus, returns 
     a histogram with all binary durations """
     durations = [m['ioi'] for m in melody['symbols']]
     counts = dict(Counter(durations))
@@ -68,13 +73,28 @@ def create_duration_histogram(melody, durations_of_interest):
      durations_of_interest}
     return histogram
 
-def extract_sequences_from_corpus(corpus_path, meta_dict=[]):
+def create_pitch_histogram(melody):
+    """ takes a melody encoded by extract_sequences_from_corpus, returns 
+    a histogram of pitches, depending on their duration in the song
+    """
+    histogram = []
+    pitches = [m['pitch'] for m in melody['symbols']]
+    iois = [m['ioi'] for m in melody['symbols']]
+    total_duration = (melody['symbols'][-1]['onset'] + 
+     melody['symbols'][-1]['ioi'])
+    set_pitches = set(pitches)
+    for s in set_pitches:
+        this_pitch = [i for i,p in enumerate(pitches) if p==s]
+        hist_weight = sum([iois[t] for t in this_pitch])/ total_duration
+        histogram.append({"pitch12": s, "value": hist_weight})
+    return histogram
+
+def extract_melodies_from_corpus(corpus_path, meta_dict):
     """ takes a corpus path, 
     and a dictionary with metadata about the corpus
     returns a dictionary with per melody:
     - tune family id
     - filename
-    - pitch histogram of the melody (weighed by duration)
     - per note: 
         - midi note number
         - pitch interval to preceding note
@@ -93,19 +113,22 @@ def extract_sequences_from_corpus(corpus_path, meta_dict=[]):
     for m in melodies:
         pitch_hist = []
         symbols = []
-        melody = converter.parse(corpus_path + m + ".krn")
-        phrase_onsets = [sp.offset for sp in melody if 
-         sp not in melody.parts and sp.offset > 0.0]
+        phrase_ends = []
+        melody = mus.converter.parse(corpus_path + m + ".krn")
         mel = melody.flat
-        this_key = mel.getElementsByClass(key.Key)
+        this_key = mel.getElementsByClass(mus.key.Key)
         if not this_key:
             key_shift = None
         else:
             key_shift = this_key[0].tonic.diatonicNoteNum
+        # get fermatas in the melody, indicating phrase endings
+        for item in mel.notesAndRests:
+            if item.expressions:
+                phrase_ends.append(item.offset)
         total_duration = mel.duration.quarterLength
         tune = mel.stripTies().notes
         # pitches, pitch intervals, scale degrees
-        pitches = [t.midi for t in tune]
+        pitches = [t.pitch.midi for t in tune]
         pInt = [pitches[i] - pitches[i-1] 
          for i,p in enumerate(pitches) if i > 0]
         if key_shift:
@@ -118,28 +141,32 @@ def extract_sequences_from_corpus(corpus_path, meta_dict=[]):
          i < len(onsets) - 1]
         iois.append(tune[-1].quarterLength)
         ioiR = [iois[i]/iois[i-1] for i,o in enumerate(iois) if i > 0]
-        # pitch histogram
-        set_pitches = set(pitches)
-        for s in set_pitches:
-            this_pitch = [i for i,p in enumerate(pitches) if p==s]
-            hist_weight = sum([iois[t] for t in this_pitch])/total_duration
-            pitch_hist.append({"pitch12":s,"value":hist_weight})
-        phrases = [a for a in meta_dict if a['filename']==m]
+        #### metric accent #####
+        if len(melody.parts[0].getElementsByClass(mus.stream.Measure))==1:
+            # only one measure, hence no meter
+            metric_weights = [np.nan for a in mel]  
+        else:
+            metric_weights = [a.beatStrength for a in mel]
+        #### initialize phrase number #####
         phrase_num = 0
         for j in range(len(tune)):
             if j==0 :
                 symbols.append({'pitch':pitches[j],'pitch_interval':None,
                 'onset':onsets[j],'ioi':iois[j],'ioiR':None, 'phrase_id':0,
                 'scale_degree':sd[j],
+                'metric_weight':metric_weights[j],
                 'note_index':j
                 })
             else :
-                if onsets[j] >= phrase_onsets[phrase_num]:
-                    phrase_num += 1
-                symbols.append({'pitch': pitches[j],'pitch_interval': pInt[j-1],
+                if len(phrase_ends) > phrase_num:
+                    if onsets[j] > phrase_ends[phrase_num]:
+                        phrase_num += 1
+                symbols.append({'pitch': pitches[j],
+                'pitch_interval': pInt[j-1],
                 'onset': onsets[j],'ioi': iois[j],'ioiR': ioiR[j-1],
                 'phrase_id': phrase_num,
                 'scale_degree': sd[j],
+                'metric_weight':metric_weights[j],
                 'note_index': j
                 })
         # calculate phrase positions
@@ -149,8 +176,10 @@ def extract_sequences_from_corpus(corpus_path, meta_dict=[]):
             phr_length = len(phr_subset)
             for i,s in enumerate(phr_subset) :
                 s['phrasePosition'] = (i+1)/float(phr_length)
-        mel_dict.append({'tunefamily_id':phrases[0]['tunefamily_id'], 
-            'filename':m, 'pitch12Histogram':pitch_hist,'symbols':symbols})
+        tunefamily_id = next((info['tunefamily_id'] for info in meta_dict if 
+         info['filename']==m),None)
+        mel_dict.append({'tunefamily_id':tunefamily_id, 
+            'filename':m,'symbols':symbols})
     return mel_dict
     
 def filter_phrases(mel_dict):
@@ -162,18 +191,17 @@ def filter_phrases(mel_dict):
         for p in num_phrases :
             selection = [s for s in m['symbols'] if s['phrase_id']==p]
             dict_entry = {'tunefamily_id': m['tunefamily_id'],
-             'filename': m['filename'], 
-             'pitch12Histogram': m['pitch12Histogram'],
+             'filename': m['filename'],
              'segment_id': p, 'symbols': selection}
-            if m['onsets_multiplied_by']:
+            if 'onsets_multiplied_by' in m:
                 dict_entry['onsets_multiplied_by'] = m['onsets_multiplied_by']
             phrase_dict.append(dict_entry)
     return phrase_dict
 
 def get_meter_shift(hist1, hist2, durations_of_interest):
-    """ takes two pitch histograms and determines how much 
+    """ takes two duration histograms and determines how much 
     the second melody needs to be shifted wrt the first
-    code: Peter van Kranenburg """
+    """
     vecsize = len(durations_of_interest)    
     h1 = np.array([hist1[k] for k in sorted(hist1.keys())])
     h2 = np.array([hist2[k] for k in sorted(hist2.keys())])
@@ -206,8 +234,27 @@ def get_pitch_shift(hist1, hist2):
 			max_int = intersection
 			shift = k
 	return shift-120
+
+def hand_adjust_melodies(mel_dict, hand_adjust_dict):
+    """ takes a list of melodies and a hand_adjust_dict which lists for each 
+    melody how its durations and pitches should be altered so that they 
+    match within a tune family. Adjusts the melodies accordingly.
+    """
+    adjusted_dict = copy.deepcopy(mel_dict)
+    for m in adjusted_dict:
+        relevant_item = next((h for h in hand_adjust_dict if 
+         h['filename']==m['filename']),None)
+        meter_shift = float(relevant_item['time_stretch'])
+        pitch_shift = int(relevant_item['pitch_shift'])
+        for s in m['symbols']:
+            s['pitch'] += pitch_shift
+            s['onset'] /= meter_shift
+            s['ioi'] /= meter_shift
+        m['onsets_multiplied_by'] = 1.0/meter_shift
+        m['pitch_shifted_by'] = pitch_shift
+    return adjusted_dict
     
-def make_duration_weighted_pitch_sequences(mel_dict,sampling_rate):
+def make_duration_weighted_pitch_sequences(mel_dict, sampling_rate):
     """this function takes a dictionary of melodies or phrases 
     and an indication how often 
     per quarter note a melody is to be sampled (sampling_rate)
@@ -222,7 +269,7 @@ def make_duration_weighted_pitch_sequences(mel_dict,sampling_rate):
         dict_entry = {'filename': m['filename'],
          'tunefamily_id': m['tunefamily_id'],
          'symbols': [{'pitch': p} for p in pitch_sequence]}
-        if m['onsets_multiplied_by']:
+        if 'onsets_multiplied_by' in m:
             dict_entry['onsets_multiplied_by'] = m['onsets_multiplied_by']
         if 'segment_id' in m:
             dict_entry['segment_id'] = m['segment_id']

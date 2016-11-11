@@ -77,18 +77,18 @@ def local_alignment(seq1, seq2, insert_score, delete_score, sim_score,
         # query sequence, rows of dynamic programming matrix
         for j in range(1, len(seq2) + 1):
             # matched in longer sequence, columns of dynamic programming matrix
-            from_top = d[i,j-1] + insert_score
-            from_left = d[i-1,j] + delete_score
+            from_left = d[i,j-1] + delete_score
+            from_top = d[i-1,j] + insert_score
             diag = d[i-1,j-1] + sim_score(seq1[i-1], seq2[j-1], variances)
             d[i,j] = max(from_top, from_left, diag, 0.0)
             if d[i,j] > max_score:
                 max_score = d[i,j]
             # store where the current entry came from in the backtrace matrix
-            if d[i,j] == from_top:
-                # deletion from query
+            if d[i,j] == from_left:
+                # deletion from longer sequence
                 backtrace = 0
-            elif d[i,j] == from_left:
-                # insertion into query
+            elif d[i,j] == from_top:
+                # insertion into longer sequence
                 backtrace = 1
             elif d[i,j] == diag:
                 # substitution
@@ -98,27 +98,38 @@ def local_alignment(seq1, seq2, insert_score, delete_score, sim_score,
             b[i,j] = backtrace
     m,n = np.where(d == max_score)
     # convert from numpy array to integer
-    m = int(m[0]) 
-    n = int(n[0])
+    similarity = max_score/float(len(seq1))
+    if not return_positions:
+        return [int(n[0]), 0, similarity]
     # store the length of the match as well to return 
     #(match length can be shorter than query length)
-    match_length = 0
-    if return_positions:
-        while d[m,n] > 0 :
-            if b[m,n] == 0:
-                m -= 1
-            elif b[m,n] == 1:
-                # insertion into query
-                n -= 1
+    match_list = []
+    # do not return more than 5 matches
+    if m.size>4:
+        num_matches = 5
+    else:
+        num_matches = m.size
+    for i in range(num_matches):
+        row = int(m[i])
+        column = int(n[i])
+        match_length = 0
+        while d[row,column] > 0 :
+            if b[row,column] == 0:
+                # deletion from longer sequence, move left
+                column -= 1
                 match_length += 1
-            elif b[m,n] == 2:
-                # substitution
-                m -= 1
-                n -= 1
+            elif b[row,column] == 1:
+                # insertion into longer sequence, move up
+                row -= 1
+            elif b[row,column] == 2:
+                # substitution, move diagonally
+                row -= 1
+                column -= 1
                 match_length += 1
             else :
-                print(d, b, m, n)
-    return int(n), match_length, max_score/float(len(seq1))
+                print(d, b, row, column)
+        match_list.append([column, match_length, similarity])
+    return match_list
 
 def pitch_rater(seq1, seq2, variances):
     """ subsitution score for local alignment"""
@@ -126,6 +137,11 @@ def pitch_rater(seq1, seq2, variances):
         return 1.0
     else:
         return -1.0
+
+def pitch_difference(seq1, seq2, variances):
+    """ subsitution score for local alignment: 
+    returns the difference between pitches in two sequences"""
+    return 2.0 - abs(seq1-seq2)
 
 def label_diff(seq1, seq2) :
     """ called by ir_alignment """
